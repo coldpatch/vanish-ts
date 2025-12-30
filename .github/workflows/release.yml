@@ -1,0 +1,225 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on version tags like v1.0.0
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: 'Publish a snapshot release'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Dry run (do not publish)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      
+      - name: Build library
+        run: bun run build
+      
+      - name: Verify build artifacts
+        run: |
+          echo "Checking ESM build..."
+          ls -la dist/esm/
+          echo "Checking CJS build..."
+          ls -la dist/cjs/
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  publish-release:
+    name: Publish Release to NPM
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: read
+      id-token: write # Required for NPM provenance
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      
+      - name: Setup Node.js (for npm publish)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $TAG_VERSION"
+      
+      - name: Update package.json version
+        run: |
+          npm version ${{ steps.version.outputs.version }} --no-git-tag-version --allow-same-version
+      
+      - name: Publish to NPM
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-snapshot:
+    name: Publish Snapshot to NPM
+    needs: build
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.snapshot == 'true')
+    
+    permissions:
+      contents: read
+      id-token: write # Required for NPM provenance
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      
+      - name: Setup Node.js (for npm publish)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      
+      - name: Generate snapshot version
+        id: snapshot
+        run: |
+          # Get the branch name (sanitized for npm)
+          if [[ "$GITHUB_REF" == refs/heads/* ]]; then
+            BRANCH="${GITHUB_REF#refs/heads/}"
+          else
+            BRANCH="unknown"
+          fi
+          
+          # Sanitize branch name for npm (replace / with -)
+          BRANCH_SANITIZED=$(echo "$BRANCH" | tr '/' '-' | tr -cd '[:alnum:]-')
+          
+          # Get short commit SHA
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          
+          # Generate timestamp for ordering
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          
+          # Create snapshot version: 0.0.0-<branch>.<timestamp>.<sha>
+          SNAPSHOT_VERSION="0.0.0-${BRANCH_SANITIZED}.${TIMESTAMP}.${SHORT_SHA}"
+          
+          echo "version=$SNAPSHOT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH_SANITIZED" >> "$GITHUB_OUTPUT"
+          echo "Generated snapshot version: $SNAPSHOT_VERSION"
+      
+      - name: Update package.json version
+        run: |
+          npm version ${{ steps.snapshot.outputs.version }} --no-git-tag-version
+      
+      - name: Publish snapshot to NPM
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          # Publish with snapshot tag (branch name) so it doesn't become 'latest'
+          npm publish --provenance --access public --tag ${{ steps.snapshot.outputs.branch }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      
+      - name: Dry run - Show what would be published
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "=== DRY RUN - Would publish: ==="
+          echo "Version: ${{ steps.snapshot.outputs.version }}"
+          echo "Tag: ${{ steps.snapshot.outputs.branch }}"
+          echo ""
+          echo "=== Package contents: ==="
+          npm pack --dry-run
+
+  # Optional: Create GitHub Release when a version tag is pushed
+  create-github-release:
+    name: Create GitHub Release
+    needs: publish-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "v${{ steps.version.outputs.version }}"
+          body: |
+            ## @vanish-email/client v${{ steps.version.outputs.version }}
+            
+            ### Installation
+            ```bash
+            npm install @vanish-email/client@${{ steps.version.outputs.version }}
+            # or
+            bun add @vanish-email/client@${{ steps.version.outputs.version }}
+            ```
+            
+            ### Links
+            - [NPM Package](https://www.npmjs.com/package/@vanish-email/client)
+          draft: false
+          prerelease: false

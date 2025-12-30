@@ -1,0 +1,50 @@
+{
+    "name": "@vanish-email/client",
+    "version": "0.0.1",
+    "description": "TypeScript/JavaScript client library for the Vanish temporary email service API",
+    "main": "./dist/cjs/vanish.js",
+    "module": "./dist/esm/vanish.js",
+    "types": "./dist/esm/vanish.d.ts",
+    "type": "module",
+    "exports": {
+        ".": {
+            "import": {
+                "types": "./dist/esm/vanish.d.ts",
+                "default": "./dist/esm/vanish.js"
+            },
+            "require": {
+                "types": "./dist/cjs/vanish.d.ts",
+                "default": "./dist/cjs/vanish.js"
+            }
+        }
+    },
+    "files": [
+        "dist",
+        "src"
+    ],
+    "scripts": {
+        "build": "bun run build:esm && bun run build:cjs",
+        "build:esm": "tsc -p tsconfig.json",
+        "build:cjs": "tsc -p tsconfig.cjs.json",
+        "prepublishOnly": "bun run build"
+    },
+    "keywords": [
+        "email",
+        "temporary",
+        "disposable",
+        "api",
+        "client",
+        "vanish"
+    ],
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/coldpatch/vanish-ts"
+    },
+    "devDependencies": {
+        "typescript": "^5.0.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
